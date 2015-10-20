@@ -18,12 +18,21 @@ the config.ini file.
 ## Usage
 ### available operations:
 - **search** - search for new giveaways using the selected source.
+
 > gleam_url_fetcher -o search -s *twitter\reddit* -mt *number_of_tweets* -tc *number_of_threads*
+
 - **utd** - update title and description for each lin.
+
 > gleam_url_fetcher -o utd -tc *number_of_threads*
+
 - **ukeys** - remove duplicate links.
+
 > gleam_url_fetcher -o ukeys -tc *number_of_threads*
+
 - **ru** - remove unavailable giveaways.
+
 > gleam_url_fetcher -o ru -tc *number_of_threads*
+
 - **print** - print all giveaways in database.
+
 > gleam_url_fetcher -o print
