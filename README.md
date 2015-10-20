@@ -1,7 +1,8 @@
 # Gleam-giveaway-url-fetcher
 ## Description
-This is a tool for collection of Gleam giveaway links from twitter and reddit (using tweepy and praw modules respectively) 
-as well as for filtering out giveaways that have ended or are unavailable (using Selenium webdriver).
+This is a tool for collection of giveaway links on the **gleam.io** platform from twitter and reddit (using tweepy and 
+praw modules respectively) as well as for filtering out giveaways that have ended or are unavailable 
+(using Selenium webdriver).
 
 All links are saved in urls.json.
 
@@ -19,7 +20,8 @@ the config.ini file.
 ### available operations:
 - **search** - search for new giveaways using the selected source.
 
-> gleam_url_fetcher -o search -s ***twitter\reddit*** -mt ***number_of_tweets*** -tc ***number_of_threads***
+> gleam_url_fetcher -o search -s ***twitter\reddit*** -mt ***number_of_tweets*** -mr ***number_of_reddit_submissions***
+ -tc ***number_of_threads***
 
 - **utd** - update title and description for each lin.
 
