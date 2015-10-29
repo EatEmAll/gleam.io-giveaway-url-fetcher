@@ -64,10 +64,14 @@ def load_from_json(file_name):
 
 
 def save_json_data(file_name, data):
-    with SAVE_LOCK:
-        with URL_LOCK:
-            with open(file_name, 'w') as f:
-                json.dump(data, f)
+    try:
+        with SAVE_LOCK:
+            with URL_LOCK:
+                with open(file_name, 'w') as f:
+                    json.dump(data, f)
+    except PermissionError:
+        time.sleep(t_min())
+        save_json_data(file_name, data)
 
 
 def save_url(url, data_source):
@@ -147,7 +151,8 @@ def giveaway_available(url, browser, xpath_dict=XPATH_DICT):
         giveaway_ended = None
     giveaway_unavailable = find_by_xpath(url, browser, xpath_dict['globe'])
     giveaway_warning = find_by_xpath(url, browser, xpath_dict['warning'])
-    return not any([giveaway_ended, giveaway_unavailable, giveaway_warning])
+    page_not_exist = find_by_xpath(url, browser, xpath_dict['not exist'])
+    return not any([giveaway_ended, giveaway_unavailable, giveaway_warning, page_not_exist])
 
 
 def process_input(data_source):  # Thread function
@@ -174,14 +179,15 @@ def process_input(data_source):  # Thread function
         else:
             url = data
 
-        url = switch_to_gleam_domain_r(url)
+        url = switch_to_gleam_domain(url)
         if url and url not in URL_DATA.keys() and giveaway_available(url, browser):
-            with URL_LOCK:
-                URL_DATA[url]['title'] = get_tag_content(url, property='og:title')
-                URL_DATA[url]['description'] = get_tag_content(url, property='og:description')
-            print('new giveaway:', url)
-            GIVEAWAY_COUNTER += 1
-            save_url(url, data_source)
+            if url not in URL_DATA.keys():
+                with URL_LOCK:
+                    URL_DATA[url]['title'] = get_tag_content(url, property='og:title')
+                    URL_DATA[url]['description'] = get_tag_content(url, property='og:description')
+                print('new giveaway:', url)
+                GIVEAWAY_COUNTER += 1
+                save_url(url, data_source)
 
         url_queue.task_done()
     browser.quit()
@@ -205,12 +211,13 @@ def update_keys(url_queue):  # Thread function
         url = url_queue.get()
         new_url = request_url_get(url).url
         if new_url and not new_url.startswith(gleam_domain):
-            new_url = switch_to_gleam_domain_r(new_url)
+            new_url = switch_to_gleam_domain(new_url)
         if new_url:
             if new_url not in URL_DATA.keys():
                 with URL_LOCK:
                     URL_DATA[new_url] = URL_DATA[url]
                     URL_DATA.pop(url)
+                print('removed url:', url)
                 print('new url added:', new_url)
             elif new_url != url:
                 with URL_LOCK:
@@ -218,6 +225,7 @@ def update_keys(url_queue):  # Thread function
         else:
             with URL_LOCK:
                 URL_DATA.pop(url)
+            print('removed url:', url)
         save_json_data(URL_FILE, URL_DATA)
         url_queue.task_done()
 
@@ -239,7 +247,7 @@ def remove_unavailable_giveaways(url_queue):  # Thread function
     browser.quit()
 
 
-def switch_to_gleam_domain_r(url, recursive=True):  # Switch to gleam.io domain if needed
+def switch_to_gleam_domain(url, recursive=True):  # Switch to gleam.io domain if needed
     gleam_domain = 'https://gleam.io/'
     linkis_domain = 'http://linkis.com/'
 
@@ -273,18 +281,18 @@ def switch_to_gleam_domain_r(url, recursive=True):  # Switch to gleam.io domain 
                         continue
 
                 if temp_result.startswith(gleam_domain):
-                    if temp_result[len(gleam_domain):].startswith('?via='):
+                    if temp_result[len(gleam_domain):].startswith('?via=' or 'app/'):
                         continue
-                    return request_url_get(temp_result).url  # Switching domain succeeded
+                    return request_url_get(temp_result, recursive=True).url  # Switching domain succeeded
 
                 elif not attr:
                     if temp_result.startswith(linkis_domain) and \
                             temp_result[len(linkis_domain):].startswith(gleam_domain[len('https://'):]):
-                        return request_url_get('https://' + temp_result[len(linkis_domain):]).url
+                        return request_url_get('https://' + temp_result[len(linkis_domain):], recursive=True).url
                     elif recursive:  # Allow recursion once
-                        temp_result = switch_to_gleam_domain_r(temp_result, recursive=False)
+                        temp_result = switch_to_gleam_domain(temp_result, recursive=False)
                         if temp_result:
-                            return request_url_get(temp_result).url
+                            return request_url_get(temp_result, recursive=True).url
 
         print("Switching domain failed:", url)
         if url not in UNRESOLVED_URLS:
@@ -292,14 +300,15 @@ def switch_to_gleam_domain_r(url, recursive=True):  # Switch to gleam.io domain 
                 UNRESOLVED_URLS.append(url)
             save_json_data(UNRESOLVED_URLS_FILE, UNRESOLVED_URLS)
     else:
-        return request_url_get(url).url
+        return request_url_get(url, recursive=True).url
 
 
-def request_url_get(url):
+def request_url_get(url, recursive=False):
     try:
         return requests.get(url, headers=HEADERS, verify=False)
     except (BaseHTTPError, RequestException, UnicodeError, OSError):
-        pass
+        if recursive:
+            request_url_get(url, recursive=False)
 
 
 def find_by_xpath(url, browser, xpath, t=t_min()):
@@ -496,7 +505,6 @@ def print_giveaways():
             print(key, value)
     print("Totally", len(URL_DATA), "submissions.\n")
     print("Totally", len(UNRESOLVED_URLS), "unresolved links.")
-
 
 def run():
     initialize_globals()

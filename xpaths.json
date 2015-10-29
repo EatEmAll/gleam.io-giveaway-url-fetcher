@@ -1,1 +1,1 @@
-{"top right": "(//span[@class=\"status ng-binding\"])[2]", "globe": "//i[@class=\"fa fa-globe\"]", "warning": "//i[@class=\"fa fa-warning\"]"}
+{"top right": "(//span[@class=\"status ng-binding\"])[2]", "globe": "//i[@class=\"fa fa-globe\"]", "warning": "//i[@class=\"fa fa-warning\"]", "not exist": "//div[@class=\"dialog\"]/h1[text()[contains(.,\"The page you were looking for doesn\")]]"}

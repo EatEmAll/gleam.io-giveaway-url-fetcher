@@ -7,7 +7,7 @@ praw modules respectively) as well as for filtering out giveaways that have ende
 All links are saved in urls.json.
 
 ## Requirements
-- Python 3.4
+- Python 3
 - Modules: [tweepy](https://github.com/tweepy/tweepy), [praw](https://github.com/praw-dev/praw), 
 [Selenium Python Bindings](http://selenium-python.readthedocs.org/), 
 [BeautifulSoup](http://www.crummy.com/software/BeautifulSoup/)
