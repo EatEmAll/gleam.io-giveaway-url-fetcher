@@ -23,7 +23,7 @@ the config.ini file.
 > gleam_url_fetcher -o search -s ***twitter\reddit*** -mt ***number_of_tweets*** -mr ***number_of_reddit_submissions***
  -tc ***number_of_threads***
 
-- **utd** - update title and description for each lin.
+- **utd** - update title and description for each link.
 
 > gleam_url_fetcher -o utd -tc ***number_of_threads***
 
