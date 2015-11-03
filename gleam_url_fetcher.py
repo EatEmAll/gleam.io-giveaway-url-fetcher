@@ -1,4 +1,3 @@
-
 # TODO: Handle warnings: ResourceWarning, DeprecationWarning
 
 import json
@@ -36,6 +35,7 @@ CONFIG_FILE = 'config.ini'
 
 # Globals:
 DATA_SOURCE = Enum('data_source', 'reddit twitter')
+GLEAM_DOMAIN = 'https://gleam.io/'
 CONFIG_DICT = {}  # holds any variables declared in config.ini
 HEADERS = {}
 DC_PHANTOMJS = dict(DesiredCapabilities.PHANTOMJS)  # Desired capabilities for phantomjs with modified user agent
@@ -46,11 +46,11 @@ REDDIT_Q = Queue()
 TWITTER_Q = Queue()
 URL_DATA = defaultdict(lambda: defaultdict(lambda: None))
 XPATH_DICT = {}
-UNRESOLVED_URLS = []
+UNRESOLVED_URLS = set()
 BROWSERS = []
-TOTAL_R_JOBS = None  # total reddit links to be processed
-TOTAL_T_JOBS = None  # total twitter links to be processed
-GIVEAWAY_COUNTER = None  # total new giveaways discovered
+TOTAL_R_JOBS = 0  # total reddit links to be processed
+TOTAL_T_JOBS = 0  # total twitter links to be processed
+GIVEAWAY_COUNTER = 0  # total new giveaways discovered
 
 # generate random values for waiting time
 t_min = lambda: random.uniform(0.05, 0.15)
@@ -74,17 +74,10 @@ def save_json_data(file_name, data):
         save_json_data(file_name, data)
 
 
-def save_url(url, data_source):
-    default_args = dict(account=None, entries_completed=0, total_entries=None)
-    with URL_LOCK:
-        if data_source == DATA_SOURCE.twitter or data_source == DATA_SOURCE.reddit:
-            URL_DATA[url].update(default_args)
-        else:
-            raise TypeError
-    save_json_data(URL_FILE, URL_DATA)
-
-
 def fetch_reddit_submissions():
+    """Use the praw module to extract links form submissions according to the chosen parameters:
+    subreddit, max_submissions, s_flair_text, s_domain (s_flair_text, s_domain are submission properties)
+    are all defined in config.ini. The value of max_submissions can be overridden by arg -mr."""
     r = praw.Reddit(user_agent=HEADERS['User-Agent'])
     subreddit = r.get_subreddit(CONFIG_DICT['reddit_config']['subreddit'])
     submissions = subreddit.get_hot(limit=CONFIG_DICT['reddit_config']['max_submissions'])
@@ -96,6 +89,9 @@ def fetch_reddit_submissions():
 
 
 def fetch_twitter_links():
+    """Generate tweepy_api and search for tweets according to the chosen parameters:
+    keyword (the query to search for), tweets_per_qry (keep this at 100), max_tweets are defined in config.ini.
+    The value of max_tweets can be overridden by arg -mt."""
     # Tweepy authentication
     tweepy_api = get_tweepy_api()
 
@@ -126,6 +122,7 @@ def fetch_twitter_links():
 
 
 def get_tweepy_api():
+    """Generate tweepy api."""
     auth = tweepy.AppAuthHandler(CONFIG_DICT['tweepy_credentials']['consumer_key'],
                                  CONFIG_DICT['tweepy_credentials']['consumer_secret'])
     api = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
@@ -135,7 +132,8 @@ def get_tweepy_api():
     return api
 
 
-def get_url_from_string(text):  # Return the first url within a string
+def get_url_from_string(text):
+    """Return the first url within a string"""
     url_pattern = re.compile(r"(?P<url>https?://[^\s]+)")
     result = re.search(url_pattern, text)
     if result:
@@ -143,6 +141,9 @@ def get_url_from_string(text):  # Return the first url within a string
 
 
 def giveaway_available(url, browser, xpath_dict=XPATH_DICT):
+    """Search for elements in the given url that indicate that the giveaway is unavailable."""
+    if not url.startswith(GLEAM_DOMAIN):
+        return False
     if xpath_dict == {}:
         xpath_dict = XPATH_DICT
     try:
@@ -155,7 +156,10 @@ def giveaway_available(url, browser, xpath_dict=XPATH_DICT):
     return not any([giveaway_ended, giveaway_unavailable, giveaway_warning, page_not_exist])
 
 
-def process_input(data_source):  # Thread function
+def process_giveaways(data_source):  # Thread function
+    """Process links from url_queue:
+    - For links that are not on the gleam.io domain attempt to extract from them links that are within gleam.io.
+    - Check if the giveaway is available. If it is, add it to URL_DATA and save it."""
     global GIVEAWAY_COUNTER
     url_queue = None
     total_jobs = None
@@ -178,7 +182,6 @@ def process_input(data_source):  # Thread function
             url = data.url
         else:
             url = data
-
         url = switch_to_gleam_domain(url)
         if url and url not in URL_DATA.keys() and giveaway_available(url, browser):
             if url not in URL_DATA.keys():
@@ -187,13 +190,15 @@ def process_input(data_source):  # Thread function
                     URL_DATA[url]['description'] = get_tag_content(url, property='og:description')
                 print('new giveaway:', url)
                 GIVEAWAY_COUNTER += 1
-                save_url(url, data_source)
+                save_json_data(URL_FILE, URL_DATA)
 
         url_queue.task_done()
     browser.quit()
 
 
 def update_title_description(url_queue):  # Thread function
+    """Update title and description for each url in url_queue. This can be used in cases where title and description
+    were unavailable when the url was added to URL_DATA."""
     while not url_queue.empty():
         url = url_queue.get()
         with URL_LOCK:
@@ -206,13 +211,16 @@ def update_title_description(url_queue):  # Thread function
 
 
 def update_keys(url_queue):  # Thread function
-    gleam_domain = 'https://gleam.io/'
+    """Clean up function for cases in which different links in URL_DATA lead to the same giveaway. Normally this
+    shouldn't happen."""
     while not url_queue.empty():
         url = url_queue.get()
         new_url = request_url_get(url).url
-        if new_url and not new_url.startswith(gleam_domain):
+        if new_url and not new_url.startswith(GLEAM_DOMAIN):
             new_url = switch_to_gleam_domain(new_url)
         if new_url:
+            # if not new_url.startswith(GLEAM_DOMAIN):
+            #     pass
             if new_url not in URL_DATA.keys():
                 with URL_LOCK:
                     URL_DATA[new_url] = URL_DATA[url]
@@ -231,6 +239,7 @@ def update_keys(url_queue):  # Thread function
 
 
 def remove_unavailable_giveaways(url_queue):  # Thread function
+    """For each url in url_queue check if the giveaway is still available. If not, remove it."""
     with BROWSER_LOCK:
         browser = webdriver.PhantomJS(desired_capabilities=DC_PHANTOMJS)
     BROWSERS.append(browser)
@@ -240,18 +249,20 @@ def remove_unavailable_giveaways(url_queue):  # Thread function
             with URL_LOCK:
                 URL_DATA.pop(url)
                 if url not in UNRESOLVED_URLS:
-                    UNRESOLVED_URLS.append(url)
+                    UNRESOLVED_URLS.add(url)
             save_json_data(URL_FILE, URL_DATA)
             print('removed giveaway:', url)
         url_queue.task_done()
     browser.quit()
 
 
-def switch_to_gleam_domain(url, recursive=True):  # Switch to gleam.io domain if needed
-    gleam_domain = 'https://gleam.io/'
+def switch_to_gleam_domain(url, recursive=True):
+    """For links that are not on the gleam.io domain, attempt to extract from their source links that are on
+    gleam.io. recursive - if no suitable link is found allow 1 level of recursion with links that are found in source.
+    """
     linkis_domain = 'http://linkis.com/'
 
-    if not url.startswith(gleam_domain):
+    if not url.startswith(GLEAM_DOMAIN):
         r = request_url_get(url)
         if not r or r.url in UNRESOLVED_URLS:
             return
@@ -280,14 +291,16 @@ def switch_to_gleam_domain(url, recursive=True):  # Switch to gleam.io domain if
                     else:
                         continue
 
-                if temp_result.startswith(gleam_domain):
-                    if temp_result[len(gleam_domain):].startswith('?via=' or 'app/'):
+                if temp_result.startswith(GLEAM_DOMAIN):
+                    giveaway_id = (temp_result[len(GLEAM_DOMAIN):])[:6]
+                    pattern = re.compile(r'^[A-Za-z0-9]{5}/$')
+                    if not pattern.match(giveaway_id):
                         continue
                     return request_url_get(temp_result, recursive=True).url  # Switching domain succeeded
 
                 elif not attr:
                     if temp_result.startswith(linkis_domain) and \
-                            temp_result[len(linkis_domain):].startswith(gleam_domain[len('https://'):]):
+                            temp_result[len(linkis_domain):].startswith(GLEAM_DOMAIN[len('https://'):]):
                         return request_url_get('https://' + temp_result[len(linkis_domain):], recursive=True).url
                     elif recursive:  # Allow recursion once
                         temp_result = switch_to_gleam_domain(temp_result, recursive=False)
@@ -297,8 +310,8 @@ def switch_to_gleam_domain(url, recursive=True):  # Switch to gleam.io domain if
         print("Switching domain failed:", url)
         if url not in UNRESOLVED_URLS:
             with URL_LOCK:
-                UNRESOLVED_URLS.append(url)
-            save_json_data(UNRESOLVED_URLS_FILE, UNRESOLVED_URLS)
+                UNRESOLVED_URLS.add(url)
+            save_json_data(UNRESOLVED_URLS_FILE, list(UNRESOLVED_URLS))
     else:
         return request_url_get(url, recursive=True).url
 
@@ -308,10 +321,13 @@ def request_url_get(url, recursive=False):
         return requests.get(url, headers=HEADERS, verify=False)
     except (BaseHTTPError, RequestException, UnicodeError, OSError):
         if recursive:
-            request_url_get(url, recursive=False)
+            return request_url_get(url)
 
 
 def find_by_xpath(url, browser, xpath, t=t_min()):
+    """Attempt to find an element with the given xpath. t - max amount of time to wait before a TimeoutException is
+    thrown. In a case of ConnectionResetError keep calling find_by_xpath until successful or a TimeoutException
+    is thrown."""
     try:
         if browser.current_url != url:
             browser.get(url)
@@ -324,8 +340,8 @@ def find_by_xpath(url, browser, xpath, t=t_min()):
         return find_by_xpath(url, browser, xpath, t=t_min())
 
 
-
 def get_tag_content(url, tag='meta', **kwargs):
+    """Get the value of content in the chosen tag. Used for finding title and description for giveaways."""
     r = request_url_get(url)
     if not r:  # url request failed
         return
@@ -335,7 +351,8 @@ def get_tag_content(url, tag='meta', **kwargs):
         return result['content']
 
 
-def print_progress(q, total_jobs, t=10):  # print progress every t seconds
+def print_progress(q, total_jobs, t=10):
+    """print progress every t seconds"""
     if total_jobs == 0:
         print('queue is empty')
         return
@@ -347,14 +364,8 @@ def print_progress(q, total_jobs, t=10):  # print progress every t seconds
         t.start()
 
 
-def reset_to_default_args():
-    default_args = dict(account=None, entries_completed=0, total_entries=None)
-    for key in URL_DATA.keys():
-        URL_DATA[key].update(default_args)
-    save_json_data(URL_FILE, URL_DATA)
-
-
 def close_browsers():
+    """Close all open browsers."""
     global BROWSERS
     for browser in BROWSERS:  # close all browsers
         try:
@@ -364,7 +375,8 @@ def close_browsers():
     BROWSERS = []
 
 
-def run_url_fetcher(data_source):
+def search_giveaways(data_source):
+    """ Search for new giveaway links from the chosen data_source (twitter or reddit)."""
     global TOTAL_R_JOBS
     global TOTAL_T_JOBS
     global GIVEAWAY_COUNTER
@@ -389,7 +401,7 @@ def run_url_fetcher(data_source):
     print('total jobs:', total_jobs)
 
     for i in range(CONFIG_DICT['global_config']['thread_count']):
-        t = threading.Thread(target=process_input, args=[data_source])
+        t = threading.Thread(target=process_giveaways, args=[data_source])
         t.daemon = True
         t.start()
 
@@ -400,6 +412,8 @@ def run_url_fetcher(data_source):
 
 
 def database_operations(thread_func):
+    """Maintenance operations for URL_DATA. Supported operations: update_title_description, update_keys,
+    remove_unavailable_giveaways"""
     q = Queue()
     total_jobs = 0
 
@@ -434,6 +448,8 @@ def database_operations(thread_func):
 
 
 def initialize_globals():
+    """Initialize all global variables. Load data from config.ini to CONFIG_DICT, from xpath.json to XPATH_DICT,
+    from urls.json to URL_DATA, from unresolved_urls.json to UNRESOLVED_URLS and from args to CONFIG_DICT"""
     class CustomParser(ConfigParser):
         def as_dict(self):  # get all data as a dictionary
             d = dict(self._sections)
@@ -470,10 +486,11 @@ def initialize_globals():
     for key in temp_dict.keys():
         URL_DATA[key].update(temp_dict[key])
     XPATH_DICT = load_from_json(XPATH_FILE)
-    UNRESOLVED_URLS = load_from_json(UNRESOLVED_URLS_FILE)
+    UNRESOLVED_URLS = set(load_from_json(UNRESOLVED_URLS_FILE))
 
 
 def get_args(args=None):
+    """Parse arguments"""
     source_types = ['twitter', 'reddit']
     operations = ['search', 'utd', 'ukeys', 'ru', 'print']
     parser = argparse.ArgumentParser(description='collector for Gleam giveaway links from twitter and reddit')
@@ -495,6 +512,7 @@ def get_args(args=None):
 
 
 def print_giveaways():
+    """print url and title for each giveaway in URL_DATA."""
     print('url database:')
     for key, value in URL_DATA.items():
         title = ''
@@ -506,16 +524,18 @@ def print_giveaways():
     print("Totally", len(URL_DATA), "submissions.\n")
     print("Totally", len(UNRESOLVED_URLS), "unresolved links.")
 
+
 def run():
+    """Main function: Initialize globals, get args, and perform the chosen operations."""
     initialize_globals()
     args_dict = vars(get_args(sys.argv[1:]))
     print('args:', args_dict)
 
     if 'search' in args_dict['operations']:
         if 'twitter' in args_dict['source']:
-            run_url_fetcher(DATA_SOURCE.twitter)
+            search_giveaways(DATA_SOURCE.twitter)
         if 'reddit' in args_dict['source']:
-            run_url_fetcher(DATA_SOURCE.reddit)
+            search_giveaways(DATA_SOURCE.reddit)
 
     db_operations = dict(utd=update_title_description, ukeys=update_keys, ru=remove_unavailable_giveaways)
     for key, value in db_operations.items():
