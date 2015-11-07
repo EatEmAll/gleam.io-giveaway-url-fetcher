@@ -1,5 +1,3 @@
-# TODO: Handle warnings: ResourceWarning, DeprecationWarning
-
 import json
 import threading
 from queue import Queue
@@ -78,6 +76,8 @@ def fetch_reddit_submissions():
     """Use the praw module to extract links form submissions according to the chosen parameters:
     subreddit, max_submissions, s_flair_text, s_domain (s_flair_text, s_domain are submission properties)
     are all defined in config.ini. The value of max_submissions can be overridden by arg -mr."""
+    global TOTAL_R_JOBS
+    TOTAL_R_JOBS = 0
     r = praw.Reddit(user_agent=HEADERS['User-Agent'])
     subreddit = r.get_subreddit(CONFIG_DICT['reddit_config']['subreddit'])
     submissions = subreddit.get_hot(limit=CONFIG_DICT['reddit_config']['max_submissions'])
@@ -86,39 +86,42 @@ def fetch_reddit_submissions():
                 (CONFIG_DICT['reddit_config']['s_domain'] in str(submission.domain).lower()):
             if submission.url not in (URL_DATA.keys() or UNRESOLVED_URLS):
                 REDDIT_Q.put(submission)
+                TOTAL_R_JOBS += 1
 
 
 def fetch_twitter_links():
     """Generate tweepy_api and search for tweets according to the chosen parameters:
     keyword (the query to search for), tweets_per_qry (keep this at 100), max_tweets are defined in config.ini.
     The value of max_tweets can be overridden by arg -mt."""
+    global TOTAL_T_JOBS
+    TOTAL_T_JOBS = 0
     # Tweepy authentication
     tweepy_api = get_tweepy_api()
+    for keyword in CONFIG_DICT['twitter_config']['keyword']:
+        tweet_count = 0
+        max_id = -1
+        tweets_per_qry = CONFIG_DICT['twitter_config']['tweets_per_qry']
+        # Fetch tweets
+        while tweet_count < CONFIG_DICT['twitter_config']['max_tweets']:
+            try:
+                if max_id <= 0:
+                    new_tweets = tweepy_api.search(q=keyword, count=tweets_per_qry)
+                else:
+                    new_tweets = tweepy_api.search(q=keyword, count=tweets_per_qry, max_id=str(max_id - 1))
+                if not new_tweets:
+                    break
 
-    tweet_count = 0
-    max_id = -1
-    keyword = CONFIG_DICT['twitter_config']['keyword']
-    tweets_per_qry = CONFIG_DICT['twitter_config']['tweets_per_qry']
-    # Fetch tweets
-    while tweet_count < CONFIG_DICT['twitter_config']['max_tweets']:
-        try:
-            if max_id <= 0:
-                new_tweets = tweepy_api.search(q=keyword, count=tweets_per_qry)
-            else:
-                new_tweets = tweepy_api.search(q=keyword, count=tweets_per_qry, max_id=str(max_id - 1))
-            if not new_tweets:
+                for tweet in new_tweets:
+                    url = get_url_from_string(tweet.text)
+                    if url and url not in (URL_DATA.keys() or UNRESOLVED_URLS):
+                        TWITTER_Q.put(url)
+                        TOTAL_T_JOBS += 1
+
+                tweet_count += len(new_tweets)
+                max_id = new_tweets[-1].id
+            except tweepy.TweepError as e:
+                print("some error:", e)
                 break
-
-            for tweet in new_tweets:
-                url = get_url_from_string(tweet.text)
-                if url and url not in (URL_DATA.keys() or UNRESOLVED_URLS):
-                    TWITTER_Q.put(url)
-
-            tweet_count += len(new_tweets)
-            max_id = new_tweets[-1].id
-        except tweepy.TweepError as e:
-            print("some error:", e)
-            break
 
 
 def get_tweepy_api():
@@ -161,14 +164,10 @@ def process_giveaways(data_source):  # Thread function
     - For links that are not on the gleam.io domain attempt to extract from them links that are within gleam.io.
     - Check if the giveaway is available. If it is, add it to URL_DATA and save it."""
     global GIVEAWAY_COUNTER
-    url_queue = None
-    total_jobs = None
     if data_source == DATA_SOURCE.reddit:
         url_queue = REDDIT_Q
-        total_jobs = TOTAL_R_JOBS
     elif data_source == DATA_SOURCE.twitter:
         url_queue = TWITTER_Q
-        total_jobs = TOTAL_T_JOBS
     else:
         raise TypeError
 
@@ -177,7 +176,6 @@ def process_giveaways(data_source):  # Thread function
     BROWSERS.append(browser)
     while not url_queue.empty():
         data = url_queue.get()
-        url = None
         if data_source == DATA_SOURCE.reddit:
             url = data.url
         else:
@@ -215,7 +213,7 @@ def update_keys(url_queue):  # Thread function
     shouldn't happen."""
     while not url_queue.empty():
         url = url_queue.get()
-        new_url = request_url_get(url).url
+        new_url = get_url_response(url).url
         if new_url and not new_url.startswith(GLEAM_DOMAIN):
             new_url = switch_to_gleam_domain(new_url)
         if new_url:
@@ -261,9 +259,12 @@ def switch_to_gleam_domain(url, recursive=True):
     gleam.io. recursive - if no suitable link is found allow 1 level of recursion with links that are found in source.
     """
     linkis_domain = 'http://linkis.com/'
+    pattern = re.compile(r'^[A-Za-z0-9]{5}/$')
 
     if not url.startswith(GLEAM_DOMAIN):
-        r = request_url_get(url)
+        if url in UNRESOLVED_URLS:
+            return
+        r = get_url_response(url)
         if not r or r.url in UNRESOLVED_URLS:
             return
         soup = BeautifulSoup(r.content, "html.parser")
@@ -284,7 +285,7 @@ def switch_to_gleam_domain(url, recursive=True):
                 else:
                     temp_url = get_url_from_string(result.text)
                     if temp_url:
-                        temp_r = request_url_get(temp_url)  # request url from text within the 'title' tag
+                        temp_r = get_url_response(temp_url)  # request url from text within the 'title' tag
                         if not temp_r:  # url request failed
                             continue
                         temp_result = temp_r.url
@@ -293,19 +294,21 @@ def switch_to_gleam_domain(url, recursive=True):
 
                 if temp_result.startswith(GLEAM_DOMAIN):
                     giveaway_id = (temp_result[len(GLEAM_DOMAIN):])[:6]
-                    pattern = re.compile(r'^[A-Za-z0-9]{5}/$')
                     if not pattern.match(giveaway_id):
                         continue
-                    return request_url_get(temp_result, recursive=True).url  # Switching domain succeeded
+                    # return request_url_get(temp_result, recursive=True).url  # Switching domain succeeded
+                    return get_url_address(temp_result)
 
                 elif not attr:
                     if temp_result.startswith(linkis_domain) and \
                             temp_result[len(linkis_domain):].startswith(GLEAM_DOMAIN[len('https://'):]):
-                        return request_url_get('https://' + temp_result[len(linkis_domain):], recursive=True).url
+                        # return request_url_get('https://' + temp_result[len(linkis_domain):], recursive=True).url
+                        return get_url_address('https://' + temp_result[len(linkis_domain):])
                     elif recursive:  # Allow recursion once
                         temp_result = switch_to_gleam_domain(temp_result, recursive=False)
                         if temp_result:
-                            return request_url_get(temp_result, recursive=True).url
+                            # return request_url_get(temp_result, recursive=True).url
+                            return get_url_address(temp_result)
 
         print("Switching domain failed:", url)
         if url not in UNRESOLVED_URLS:
@@ -313,15 +316,24 @@ def switch_to_gleam_domain(url, recursive=True):
                 UNRESOLVED_URLS.add(url)
             save_json_data(UNRESOLVED_URLS_FILE, list(UNRESOLVED_URLS))
     else:
-        return request_url_get(url, recursive=True).url
+        giveaway_id = (url[len(GLEAM_DOMAIN):])[:6]
+        if pattern.match(giveaway_id):
+            return get_url_response(url, recursive=True).url
 
 
-def request_url_get(url, recursive=False):
+def get_url_response(url, recursive=False):
     try:
         return requests.get(url, headers=HEADERS, verify=False)
     except (BaseHTTPError, RequestException, UnicodeError, OSError):
         if recursive:
-            return request_url_get(url)
+            return get_url_response(url)
+
+
+def get_url_address(url):
+    try:
+        return get_url_response(url, recursive=True).url
+    except AttributeError:
+        pass
 
 
 def find_by_xpath(url, browser, xpath, t=t_min()):
@@ -342,26 +354,13 @@ def find_by_xpath(url, browser, xpath, t=t_min()):
 
 def get_tag_content(url, tag='meta', **kwargs):
     """Get the value of content in the chosen tag. Used for finding title and description for giveaways."""
-    r = request_url_get(url)
+    r = get_url_response(url)
     if not r:  # url request failed
         return
     soup = BeautifulSoup(r.content, "html.parser")
     result = soup.find(tag, content=True, **kwargs)
     if result:
         return result['content']
-
-
-def print_progress(q, total_jobs, t=10):
-    """print progress every t seconds"""
-    if total_jobs == 0:
-        print('queue is empty')
-        return
-    percentage = round(100 * (total_jobs - q.unfinished_tasks) / total_jobs, 2)
-    print('progress: {} % completed'.format(percentage))
-    t = threading.Timer(t, print_progress, args=[q, total_jobs])
-    t.daemon = True
-    if percentage < 100:
-        t.start()
 
 
 def close_browsers():
@@ -381,34 +380,35 @@ def search_giveaways(data_source):
     global TOTAL_T_JOBS
     global GIVEAWAY_COUNTER
     GIVEAWAY_COUNTER = 0
-    q = None
-    total_jobs = None
 
     data_source_name = str(data_source).split('.')[1]
     print('starting url fetcher on', data_source_name)
 
     if data_source == DATA_SOURCE.reddit:
-        fetch_reddit_submissions()
+        fetch_links(fetch_reddit_submissions, 9)
         q = REDDIT_Q
-        TOTAL_R_JOBS = q.qsize()
     elif data_source == DATA_SOURCE.twitter:
-        fetch_twitter_links()
+        fetch_links(fetch_twitter_links, 5)
         q = TWITTER_Q
-        TOTAL_T_JOBS = q.qsize()
     else:
         raise TypeError
-    total_jobs = q.qsize()
-    print('total jobs:', total_jobs)
 
     for i in range(CONFIG_DICT['global_config']['thread_count']):
         t = threading.Thread(target=process_giveaways, args=[data_source])
         t.daemon = True
         t.start()
 
-    print_progress(q, total_jobs)
+    print_progress(q, data_source=data_source)
     q.join()
     print('discovered {} new giveaways'.format(GIVEAWAY_COUNTER))
     close_browsers()
+
+
+def fetch_links(func, t_wait):  # Thread function
+    t = threading.Thread(target=func)
+    t.daemon = True
+    t.start()
+    time.sleep(t_wait)
 
 
 def database_operations(thread_func):
@@ -435,13 +435,12 @@ def database_operations(thread_func):
         return
 
     total_jobs = q.qsize()
-    print('total jobs:', total_jobs)
     for i in range(CONFIG_DICT['global_config']['thread_count']):
         t = threading.Thread(target=thread_func, args=[q])
         t.daemon = True
         t.start()
 
-    print_progress(q, total_jobs)
+    print_progress(q, total_jobs=total_jobs)
     q.join()
     if thread_func == remove_unavailable_giveaways:
         close_browsers()
@@ -472,12 +471,15 @@ def initialize_globals():
 
     args_dict = vars(get_args(sys.argv[1:]))
     args_keys = (dict(pkey='twitter_config', skey='max_tweets', akey='maxt'),
+                 dict(pkey='twitter_config', skey='keyword', akey='keyword'),
                  dict(pkey='reddit_config', skey='max_submissions', akey='maxr'),
                  dict(pkey='global_config', skey='thread_count', akey='tcount'))
     # overwrite data from config_dict with given arguments
     for item in args_keys:
-        if args_dict[item['akey']] and args_dict[item['akey']] > 0:
-            CONFIG_DICT[item['pkey']][item['skey']] = args_dict[item['akey']]
+        akey_value = args_dict[item['akey']]
+        if akey_value:
+            if type(akey_value) is int and akey_value > 0 or type(akey_value) is str:
+                CONFIG_DICT[item['pkey']][item['skey']] = args_dict[item['akey']]
 
     HEADERS['User-Agent'] = CONFIG_DICT['global_config']['user_agent']
     DC_PHANTOMJS['phantomjs.page.settings.userAgent'] = HEADERS['User-Agent']
@@ -505,10 +507,35 @@ def get_args(args=None):
     ru - remove unavailable giveaways.
     print - print all giveaways in database.
     ''')
+    parser.add_argument('-kw', '--keyword', help='keywords to search for', type=str, nargs='+')
     parser.add_argument('-mt', '--maxt', help='max tweets to search for', type=int)
     parser.add_argument('-mr', '--maxr', help='max reddit submissions to search for', type=int)
     parser.add_argument('-tc', '--tcount', help='number of threads to run', type=int)
     return parser.parse_args(args)
+
+
+def print_progress(q, data_source=None, total_jobs=None, t=10):  # print progress every t seconds
+    if total_jobs == 0:
+        print('queue is empty')
+        return
+    if not (data_source or total_jobs):
+        print('One parameter of the following is required: data_source, total_jobs.')
+        raise TypeError
+
+    if data_source:
+        if data_source == DATA_SOURCE.reddit:
+            total_jobs = TOTAL_R_JOBS
+        elif data_source == DATA_SOURCE.twitter:
+            total_jobs = TOTAL_T_JOBS
+        else:
+            raise TypeError
+
+    percentage = round(100 * (total_jobs - q.unfinished_tasks) / total_jobs, 2)
+    print('progress: {} % completed'.format(percentage))
+    t = threading.Timer(t, print_progress, args=[q, data_source, total_jobs, t])
+    t.daemon = True
+    if percentage < 100:
+        t.start()
 
 
 def print_giveaways():

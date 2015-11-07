@@ -20,8 +20,8 @@ the config.ini file.
 ### available operations:
 - **search** - search for new giveaways using the selected source.
 
-> gleam_url_fetcher -o search -s ***twitter\reddit*** -mt ***number_of_tweets*** -mr ***number_of_reddit_submissions***
- -tc ***number_of_threads***
+> gleam_url_fetcher -o search -s ***twitter\reddit*** -kw ***gleam giveaway*** -mt ***number_of_tweets*** -mr 
+***number_of_reddit_submissions*** -tc ***number_of_threads***
 
 - **utd** - update title and description for each link.
 
