@@ -112,10 +112,10 @@ def fetch_twitter_links():
                     break
 
                 for tweet in new_tweets:
-                    url = get_url_from_string(tweet.text)
-                    if url and url not in (URL_DATA.keys() or UNRESOLVED_URLS):
-                        TWITTER_Q.put(url)
-                        TOTAL_T_JOBS += 1
+                    for url in [url_dict['expanded_url'] for url_dict in tweet.entities['urls']]:
+                        if url and url not in (URL_DATA.keys() or UNRESOLVED_URLS):
+                            TWITTER_Q.put(url)
+                            TOTAL_T_JOBS += 1
 
                 tweet_count += len(new_tweets)
                 max_id = new_tweets[-1].id
@@ -468,6 +468,9 @@ def initialize_globals():
     for primary_key, secondary_key_list in int_keys.items():
         for secondary_key in secondary_key_list:
             CONFIG_DICT[primary_key][secondary_key] = int(CONFIG_DICT[primary_key][secondary_key])
+    keyword = CONFIG_DICT['twitter_config']['keyword']
+    CONFIG_DICT['twitter_config']['keyword'] = []
+    CONFIG_DICT['twitter_config']['keyword'].append(keyword)
 
     args_dict = vars(get_args(sys.argv[1:]))
     args_keys = (dict(pkey='twitter_config', skey='max_tweets', akey='maxt'),
@@ -478,7 +481,7 @@ def initialize_globals():
     for item in args_keys:
         akey_value = args_dict[item['akey']]
         if akey_value:
-            if type(akey_value) is int and akey_value > 0 or type(akey_value) is str:
+            if type(akey_value) is int and akey_value > 0 or type(akey_value) is list:
                 CONFIG_DICT[item['pkey']][item['skey']] = args_dict[item['akey']]
 
     HEADERS['User-Agent'] = CONFIG_DICT['global_config']['user_agent']
