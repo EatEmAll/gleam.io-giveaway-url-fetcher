@@ -11,11 +11,11 @@ from configparser import ConfigParser
 import socket
 import http.client
 import time
+from urllib.error import URLError
 
 import praw
 import requests
-from requests.exceptions import BaseHTTPError
-from requests.exceptions import RequestException
+from requests.exceptions import BaseHTTPError, RequestException
 import tweepy
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -279,7 +279,6 @@ def switch_to_gleam_domain(url, recursive=True):
                 attr = attr[0]
             results = soup.find_all(query['tag'], **query['attrs'])
             for result in results:
-                temp_result = None
                 if attr:
                     temp_result = result[attr]
                 else:
@@ -294,7 +293,7 @@ def switch_to_gleam_domain(url, recursive=True):
 
                 if temp_result.startswith(GLEAM_DOMAIN):
                     giveaway_id = (temp_result[len(GLEAM_DOMAIN):])[:6]
-                    if not pattern.match(giveaway_id):
+                    if not pattern.match(giveaway_id) or 'login' in giveaway_id:
                         continue
                     # return request_url_get(temp_result, recursive=True).url  # Switching domain succeeded
                     return get_url_address(temp_result)
@@ -317,7 +316,7 @@ def switch_to_gleam_domain(url, recursive=True):
             save_json_data(UNRESOLVED_URLS_FILE, list(UNRESOLVED_URLS))
     else:
         giveaway_id = (url[len(GLEAM_DOMAIN):])[:6]
-        if pattern.match(giveaway_id):
+        if pattern.match(giveaway_id) and 'login' not in giveaway_id:
             return get_url_response(url, recursive=True).url
 
 
@@ -340,16 +339,17 @@ def find_by_xpath(url, browser, xpath, t=t_min()):
     """Attempt to find an element with the given xpath. t - max amount of time to wait before a TimeoutException is
     thrown. In a case of ConnectionResetError keep calling find_by_xpath until successful or a TimeoutException
     is thrown."""
-    try:
-        if browser.current_url != url:
-            browser.get(url)
-        element = WebDriverWait(browser, t).until(lambda e: e.find_element_by_xpath(xpath))
-        return element
-    except TimeoutException:
-        pass
-    except ConnectionResetError:
-        time.sleep(t_min())
-        return find_by_xpath(url, browser, xpath, t=t_min())
+    num_of_tries = 5
+    for _ in range(num_of_tries):
+        try:
+            if browser.current_url != url:
+                browser.get(url)
+            element = WebDriverWait(browser, t).until(lambda e: e.find_element_by_xpath(xpath))
+            return element
+        except TimeoutException:
+            return
+        except (ConnectionResetError, ConnectionRefusedError, URLError):
+            time.sleep(t_min())
 
 
 def get_tag_content(url, tag='meta', **kwargs):
@@ -415,7 +415,6 @@ def database_operations(thread_func):
     """Maintenance operations for URL_DATA. Supported operations: update_title_description, update_keys,
     remove_unavailable_giveaways"""
     q = Queue()
-    total_jobs = 0
 
     if thread_func == update_title_description:
         print('updating title and description')
