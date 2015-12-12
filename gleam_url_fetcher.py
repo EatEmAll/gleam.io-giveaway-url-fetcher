@@ -385,10 +385,10 @@ def search_giveaways(data_source):
     print('starting url fetcher on', data_source_name)
 
     if data_source == DATA_SOURCE.reddit:
-        fetch_links(fetch_reddit_submissions, 9)
+        fetch_links(fetch_reddit_submissions, CONFIG_DICT['global_config']['search_wait_t'])
         q = REDDIT_Q
     elif data_source == DATA_SOURCE.twitter:
-        fetch_links(fetch_twitter_links, 5)
+        fetch_links(fetch_twitter_links, CONFIG_DICT['global_config']['search_wait_t'])
         q = TWITTER_Q
     else:
         raise TypeError
@@ -463,7 +463,7 @@ def initialize_globals():
     config_parser.read(CONFIG_FILE)
     CONFIG_DICT = config_parser.as_dict()
     int_keys = dict(twitter_config=['max_tweets', 'tweets_per_qry'], reddit_config=['max_submissions'],
-                    global_config=['thread_count'])  # keys with int values
+                    global_config=['thread_count', 'search_wait_t'])  # keys with int values
     for primary_key, secondary_key_list in int_keys.items():
         for secondary_key in secondary_key_list:
             CONFIG_DICT[primary_key][secondary_key] = int(CONFIG_DICT[primary_key][secondary_key])
@@ -532,7 +532,10 @@ def print_progress(q, data_source=None, total_jobs=None, t=10):  # print progres
         else:
             raise TypeError
 
-    percentage = round(100 * (total_jobs - q.unfinished_tasks) / total_jobs, 2)
+    try:
+        percentage = round(100 * (total_jobs - q.unfinished_tasks) / total_jobs, 2)
+    except ZeroDivisionError:
+        percentage = 100
     print('progress: {} % completed'.format(percentage))
     t = threading.Timer(t, print_progress, args=[q, data_source, total_jobs, t])
     t.daemon = True
