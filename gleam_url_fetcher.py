@@ -84,7 +84,7 @@ def fetch_reddit_submissions():
     for submission in submissions:
         if (CONFIG_DICT['reddit_config']['s_flair_text'] in str(submission.link_flair_text).lower()) or \
                 (CONFIG_DICT['reddit_config']['s_domain'] in str(submission.domain).lower()):
-            if submission.url not in (URL_DATA.keys() or UNRESOLVED_URLS):
+            if not any(submission.url in urls for urls in (URL_DATA.keys(), UNRESOLVED_URLS)):
                 REDDIT_Q.put(submission)
                 TOTAL_R_JOBS += 1
 
@@ -113,7 +113,7 @@ def fetch_twitter_links():
 
                 for tweet in new_tweets:
                     for url in [url_dict['expanded_url'] for url_dict in tweet.entities['urls']]:
-                        if url and url not in (URL_DATA.keys() or UNRESOLVED_URLS):
+                        if url and not any(url in urls for urls in (URL_DATA.keys(), UNRESOLVED_URLS)):
                             TWITTER_Q.put(url)
                             TOTAL_T_JOBS += 1
 
